@@ -22,8 +22,9 @@
 package net.dataforte.infinispan.amanuensis;
 
 import java.io.Serializable;
-import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * This class implements the message that is sent 
@@ -35,7 +36,7 @@ import java.util.List;
  */
 public class IndexOperations implements Serializable {
 	final String indexName;
-	List<IndexOperation> operations = new ArrayList<IndexOperation>();
+	Collection<IndexOperation> operations = new ConcurrentLinkedQueue<IndexOperation>();
 
 	public IndexOperations(String indexName) {
 		this.indexName = indexName;
@@ -65,7 +66,7 @@ public class IndexOperations implements Serializable {
 		return indexName;
 	}
 
-	public List<IndexOperation> getOperations() {
+	public Collection<IndexOperation> getOperations() {
 		return operations;
 	}
 
