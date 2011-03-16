@@ -21,6 +21,10 @@
 
 package net.dataforte.infinispan.amanuensis;
 
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
+
 import net.dataforte.commons.slf4j.LoggerFactory;
 import net.dataforte.infinispan.amanuensis.ops.AddDocumentOperation;
 import net.dataforte.infinispan.amanuensis.ops.DeleteDocumentsQueriesOperation;
@@ -38,14 +42,27 @@ public class AmanuensisIndexWriter {
 	private AmanuensisManager manager;
 	private String directoryId;
 	private ThreadLocal<IndexOperations> batchOps;
+	private GlobalBatch globalBatch;
+
+	// Locks ======
+    private final ReadLock gbInsertLock;  // like a read lock: many threads can insert in the queue at the same time 
+    private final WriteLock gbExtractionLock; // like a write lock: just one thread can be active while removing from the queue
+    // ===========
+
 
 	private Directory directory;
+
 
 	public AmanuensisIndexWriter(AmanuensisManager manager, Directory directory) throws IndexerException {
 		this.manager = manager;
 		this.directoryId = AmanuensisManager.getUniqueDirectoryIdentifier(directory);
 		this.directory = directory;
 		this.batchOps = new ThreadLocal<IndexOperations>();
+		this.globalBatch = new GlobalBatch();
+		
+        ReentrantReadWriteLock readWriteLock = new ReentrantReadWriteLock(true);
+        gbInsertLock = readWriteLock.readLock();
+        gbExtractionLock = readWriteLock.writeLock();
 	}
 
 	public String getDirectoryId() {
@@ -62,17 +79,57 @@ public class AmanuensisIndexWriter {
 		return batchOps.get() != null;
 	}
 
-	/**
+    /**
+     * Put this thread in <I>global</I> batch mode: all operations 
+     * will be inserted in a queue shared among all threads in global batching mode,
+     *  and sent when the {@link AmanuensisIndexWriter#flushGlobalBatch()} method is
+     * invoked. Note that every thread can independently choose if join the global batching mode,
+     * or to be in the thread-local batching mode (see {@link AmanuensisIndexWriter#startBatch()}), 
+     * or not to be in any type of batching mode.
+     * 
+     * @see AmanuensisIndexWriter#endBatch()
+     * @see AmanuensisIndexWriter#cancelBatch()
+     */
+    public void startAddingGlobalBatch() {
+        if ( isBatching() ) {
+            throw new IllegalStateException("This thread [ " + Thread.currentThread().getName() + "] is currently in batching mode so it cannot enter in the global batching mode");
+        }
+
+        if (isGlobalBatching()) {
+            throw new IllegalStateException("Already in global batching mode");
+        } else {
+            this.globalBatch.batchEnabled.set(Boolean.TRUE);
+
+            if (log.isDebugEnabled()) {
+                log.debug("Thread [" + Thread.currentThread().getName() +"] joining the global batching for index " + directoryId);
+            }
+        }
+
+    }
+
+    /**
+     * Return true if and only if at least one thread is in the global batching mode.
+     * @return
+     */
+    public boolean isGlobalBatching() {
+        return globalBatch.batchEnabled.get() != null;
+    }
+
+    /**
 	 * Put this InfinispanIndexWriter in batch mode: all operations will be
 	 * queued and sent when the {@link AmanuensisIndexWriter#endBatch} method is
 	 * invoked. Note that the batches are local to the current thread, therefore
-	 * each thread may start and end a batch indipendently from the others.
+	 * each thread may start and end a batch independently from the others.
 	 * 
 	 * @see AmanuensisIndexWriter#endBatch()
 	 * @see AmanuensisIndexWriter#cancelBatch()
 	 */
 	public void startBatch() {
-		if (isBatching()) {
+        if ( isGlobalBatching() ) {
+            throw new IllegalStateException("This thread [ " + Thread.currentThread().getName() + "] is currently in the global batching mode so it cannot enter in the thread-specific batching mode");
+        }
+
+        if (isBatching()) {
 			throw new IllegalStateException("Already in batching mode");
 		} else {
 			batchOps.set(new IndexOperations(this.directoryId));
@@ -83,7 +140,54 @@ public class AmanuensisIndexWriter {
 		}
 	}
 
-	/**
+    /**
+     * Send all changes in the current batch, started by
+     * {@link AmanuensisIndexWriter#startBatch()} to the master node for
+     * indexing
+     * 
+     * @throws IllegalStateException if this thread wasn't in global batching mode
+     * 
+     * @see AmanuensisIndexWriter#startBatch()
+     * @see AmanuensisIndexWriter#cancelBatch()
+     */
+    public void endAddingGlobalBatch() {
+        if (!isGlobalBatching()) {
+            throw new IllegalStateException("Not in global batching mode");
+        } else {
+            this.globalBatch.batchEnabled.remove();
+            if (log.isDebugEnabled()) {
+                log.debug("Finished this thread [" + Thread.currentThread().getName() + "] join to global batching for index " + directoryId);
+            }
+        }
+    }
+    
+    /**
+     * Send all changes in the current global batch to the master node for
+     * indexing. The caller of this method doesn't need to be in global batching mode.
+     * 
+     * @throws IndexerException
+     * 
+     * @see AmanuensisIndexWriter#startAddingGlobalBatch()
+     * @see AmanuensisIndexWriter#cancelGlobalBatch()
+     */
+    public void flushGlobalBatch() throws IndexerException {
+        IndexOperations tempBatchOps;
+        gbExtractionLock.lock();
+        try {
+            tempBatchOps = globalBatch.indexOperations;
+            globalBatch.indexOperations = new IndexOperations(this.directoryId);
+        } finally {
+            gbExtractionLock.unlock();
+        }
+
+        manager.dispatchOperations(tempBatchOps);
+        if (log.isTraceEnabled()) {
+            log.trace("Global batch flushed for index " + directoryId);
+        }
+
+    }
+    
+    /**
 	 * Send all changes in the current batch, started by
 	 * {@link AmanuensisIndexWriter#startBatch()} to the master node for
 	 * indexing
@@ -104,6 +208,22 @@ public class AmanuensisIndexWriter {
 			}
 		}
 	}
+
+    /**
+     * Cancels the current batch: all queued changes will be reset and not sent
+     * to the master
+     * 
+     * @see AmanuensisIndexWriter#startBatch()
+     * @see AmanuensisIndexWriter#endBatch()
+     */
+    public void cancelGlobalBatch() {
+        synchronized (globalBatch.indexOperations) {
+            globalBatch.indexOperations = new IndexOperations(directoryId);
+            if (log.isDebugEnabled()) {
+                log.debug("Global batching cancelled for index " + directoryId);
+            }
+        }
+    }
 
 	/**
 	 * Cancels the current batch: all queued changes will be reset and not sent
@@ -188,11 +308,32 @@ public class AmanuensisIndexWriter {
 
 	// INTERNAL METHODS
 	private void dispatch(IndexOperation... ops) throws IndexerException {
-		if (isBatching()) {
-			batchOps.get().addOperations(ops);
-		} else {
+        if (isGlobalBatching()) {
+            gbInsertLock.lock();
+            try {
+                globalBatch.indexOperations.addOperations(ops);
+                return;
+            } finally {
+                gbInsertLock.unlock();
+            }
+        }
+        if (isBatching()) {
+            batchOps.get().addOperations(ops);
+        } else {
 			manager.dispatchOperations(new IndexOperations(this.directoryId, ops));
 		}
+	}
+
+
+	private class GlobalBatch {
+	    private IndexOperations indexOperations;
+	    private ThreadLocal<Object> batchEnabled;
+	    
+	    GlobalBatch() {
+	        this.batchEnabled = new ThreadLocal<Object>();
+            this.indexOperations = new IndexOperations(directoryId);
+	    }
+
 	}
 
 }
