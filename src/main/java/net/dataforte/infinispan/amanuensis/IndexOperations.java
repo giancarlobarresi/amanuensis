@@ -30,13 +30,14 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * This class implements the message that is sent 
  * from the slaves to the master. It contains the name
  * of the index on which to operate and an ordered list of
- * operations to apply to that index
+ * operations to apply to that index.
+ * Manipulations on the list of operations are thread-safe.
  * 
  * @author Tristan Tarrant
  */
 public class IndexOperations implements Serializable {
 	final String indexName;
-	Collection<IndexOperation> operations = new ConcurrentLinkedQueue<IndexOperation>();
+	ConcurrentLinkedQueue<IndexOperation> operations = new ConcurrentLinkedQueue<IndexOperation>();
 
 	public IndexOperations(String indexName) {
 		this.indexName = indexName;
