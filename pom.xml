@@ -7,12 +7,12 @@
 	</parent>
 	<groupId>net.dataforte.infinispan</groupId>
 	<artifactId>amanuensis</artifactId>
-	<version>0.0.18.R-SNAPSHOT</version>
+	<version>0.0.18.R</version>
 	<name>Infinispan Amanuensis Lucene Indexer</name>
 
 	<properties>
 		<version.lucene>3.0.3</version.lucene>
-		<version.infinispan>4.2.1.CR3</version.infinispan>
+		<version.infinispan>4.2.1.CR4</version.infinispan>
 		<version.slf4j>1.6.1</version.slf4j>
 	</properties>
 
