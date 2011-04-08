@@ -58,7 +58,7 @@ public class AmanuensisIndexReader {
 			this.amanuensisManager = amanuensisManager;
 			this.currentReader = new PerDirectoryLatestReader(directory);
 		} catch (Exception e) {
-			throw new IndexerException("Could not create IndexReader", e);
+			throw new IndexerException("Could not create IndexReader on the directory " + directory, e);
 		}
 	}
 
