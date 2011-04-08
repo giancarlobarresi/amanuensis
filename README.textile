@@ -5,3 +5,9 @@ h2. What is it ?
 
 Amanuensis attempts to implement a pseudo-distributed Lucene IndexWriter for use with Infinispan's Lucene Directory implementation. It is modelled around Hibernate Search's backend from which it borrows many ideas and bits of code. Index operations are dispatched from slaves to one master (colocated with Infinispan's coordinator) which applies them to the real IndexWriter.
 Amanuensis also implements methods for obtaining efficient IndexReader instances which handle 
+
+h3. Fork Note
+
+This fork of the original Amanuensis project address some special needs. They are related especially to :
+- make AmanuensisIndexWriter able to share among multiple threads a global batch of Lucene index operations
+- enforce the decoupling of Amanuensis and the use of Infinispan's Lucene Directory; now Amanuensis needs Infinispan to recognize the current cluster coordinator, but we'll try to remove this dependency
